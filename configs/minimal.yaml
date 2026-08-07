@@ -1,0 +1,8 @@
+# Smallest useful configuration: just the paths for a QC run.
+#
+# Everything not listed here falls back to the defaults documented in
+# stcompass/config.py.  Run `stcompass qc --config configs/minimal.yaml`.
+
+paths:
+  raw: ./data/raw
+  qc: ./data/qc

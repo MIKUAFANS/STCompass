@@ -1,0 +1,241 @@
+# STCompass — fully annotated example configuration
+# STCompass — 带完整注释的示例配置
+#
+# Every key below is optional and shown with its default value, so this file
+# doubles as reference documentation. Copy it, delete what you do not need, and
+# commit the result next to your results — that is what makes a run reproducible.
+#
+# 下面每一项都是可选的，并标注了默认值，因此本文件同时可当作参考文档。
+# 建议复制后删除不需要的部分，并与结果一并提交到版本库，这样才能复现实验。
+#
+#   stcompass qc       --config configs/example.yaml
+#   stcompass cluster  --config configs/example.yaml
+#   stcompass annotate --config configs/example.yaml
+#   stcompass programs --config configs/example.yaml
+#   stcompass plot     --config configs/example.yaml
+#
+# Any setting can be overridden on the command line, and the flag wins over the
+# file:  stcompass qc --config example.yaml --n-top-genes 2000
+# 命令行参数优先级高于配置文件。
+
+# ---------------------------------------------------------------------------
+# Filesystem roots / 目录结构
+# ---------------------------------------------------------------------------
+# Each stage mirrors the input tree into its output root, so
+# raw/<platform>/<species>/<sample>.h5ad becomes qc/<platform>/<species>/<sample>.h5ad.
+# Samples that already have an output are skipped, which makes runs resumable.
+#
+# 每个阶段都会把输入目录结构镜像到输出根目录；已存在输出的样本会被跳过，
+# 因此任务中断后可以直接续跑。
+#
+# Environment variables and ~ are expanded: ${ATLAS_ROOT}/raw works.
+# 支持环境变量与 ~ 展开。
+paths:
+  raw: ./data/raw                  # input .h5ad files / 原始输入
+  qc: ./data/qc                    # stcompass qc output
+  clustered: ./data/clustered      # stcompass cluster output
+  annotated: ./data/annotated      # stcompass annotate output
+  programs: ./data/programs        # stcompass programs output
+  figures: ./data/figures          # stcompass plot output
+  reference: ./data/reference      # scRNA-seq references: <species>/<tissue>/*.h5ad
+  metadata: ./data/samples.xlsx    # sample sheet (.xlsx or .csv) / 样本信息表
+
+# ---------------------------------------------------------------------------
+# Global / 全局
+# ---------------------------------------------------------------------------
+n_jobs: 1          # worker processes / 并行进程数
+overwrite: false   # re-process samples that already have an output / 是否覆盖已有输出
+# log_file: ./logs/atlas.log   # DEBUG-level log of the whole run / 完整调试日志
+
+# ---------------------------------------------------------------------------
+# stcompass qc — quality control, normalisation, embedding, clustering
+# stcompass qc — 质控、归一化、降维、聚类
+# ---------------------------------------------------------------------------
+# Thresholds are chosen per sample from the platform's resolution class, because
+# one cutoff cannot serve both assay families: a Visium barcode pools several
+# cells and yields thousands of counts, while a MERFISH cell is measured on a
+# few-hundred-gene panel and may legitimately carry twenty.
+#
+# 阈值按平台分辨率自动选择：Visium 这类 spot 每个条码混合多个细胞、计数很高；
+# 而 MERFISH 单细胞只测几百个基因，计数低是正常的。用同一套阈值必然有一边出错。
+# 运行 `stcompass platforms` 可查看平台归类。
+qc:
+  # spot-based platforms / spot 平台（Visium、Slide-seq、Stereo-seq …）
+  min_counts_spot: 100
+  min_genes_spot: 30
+  # imaging-based, single-cell platforms / 成像单细胞平台（MERFISH、Xenium …）
+  min_counts_single_cell: 20
+  min_genes_single_cell: 10
+
+  # Drop genes seen in fewer than this many barcodes. Applied to spot-based
+  # platforms only: on a targeted panel every probe was chosen deliberately, so
+  # filtering by prevalence would discard real signal.
+  # 仅对 spot 平台生效；靶向 panel 的每个探针都是刻意选择的，按出现频率过滤会丢失真实信号。
+  min_cells_per_gene: 5
+
+  # Reject a sample left with too few units after filtering.
+  # 过滤后剩余单元过少的样本直接判定为不可用。
+  min_spots_after_qc: 50
+  min_cells_after_qc: 10
+
+  # The published atlas was built with these filters disabled (they were
+  # commented out in the original script) so that every barcode survived for
+  # downstream deconvolution. Set both to false to reproduce that output exactly.
+  # 原始脚本中这两个过滤是被注释掉的，即保留所有条码以供后续解卷积。
+  # 若要精确复现已发表结果，请将两者设为 false。
+  filter_cells: true
+  filter_genes: true
+
+  target_sum: 10000.0    # counts per barcode after normalisation / 归一化目标总数
+  n_top_genes: 3000      # highly variable genes before PCA / PCA 前的高变基因数
+  hvg_flavor: seurat     # seurat | cell_ranger | seurat_v3
+  n_pcs: 50
+  n_neighbors: 15
+  cluster_method: leiden # leiden | louvain
+  resolution: 1.0
+  compute_umap: true     # set false for very large samples / 超大样本可关闭以节省时间
+
+  # Values sampled to decide whether the matrix holds raw counts. Public atlases
+  # mix raw and pre-normalised matrices with no reliable flag, so QC infers it:
+  # applying log1p twice compresses real biological variation, while skipping it
+  # leaves counts on a scale that breaks PCA.
+  # 公共数据集混杂原始计数与已归一化矩阵且无可靠标记，因此需要抽样推断：
+  # 重复 log1p 会压缩真实生物学差异，而漏做则会让 PCA 失效。
+  integer_check_sample_size: 2000
+
+# ---------------------------------------------------------------------------
+# stcompass cluster — standalone re-clustering / 独立重新聚类
+# ---------------------------------------------------------------------------
+clustering:
+  method: louvain          # leiden | louvain
+  # resolution: 0.5        # fixed value; omit to use the schedule below
+                           # 固定分辨率；留空则使用下面的规则表
+  # Resolution by sample size: small sections need a coarse graph to yield
+  # interpretable domains, large ones fragment into noise unless it drops.
+  # Read as "fewer than N cells -> resolution R"; the first match wins.
+  # 按样本量选择分辨率：小样本需要更粗的图才能得到可解释的域，
+  # 大样本若不降低分辨率就会碎成噪声。规则为「少于 N 个细胞 -> 分辨率 R」，取首个匹配。
+  resolution_schedule:
+    - [100, 1.2]
+    - [500, 0.7]
+    - [5000, 0.5]
+    - [20000, 0.3]
+  fallback_resolution: 0.2   # for samples larger than every entry above / 超出上表的样本
+  # key_added: spatial_domain # destination obs column; defaults to `method`
+  recompute_neighbors: false # rebuild the kNN graph instead of reusing QC's
+  n_pcs: 50
+  n_neighbors: 15
+
+# ---------------------------------------------------------------------------
+# stcompass annotate — cell-type annotation / 细胞类型注释
+# ---------------------------------------------------------------------------
+# The method follows from the platform, not from a user choice:
+#   spot-based        -> Tangram deconvolution  -> obsm["tangram_ct_pred"] (proportions)
+#   single-cell       -> SingleR classification -> obs["singler_best"] (one label)
+#
+# 方法由平台决定而非用户选择：
+#   spot 平台   -> Tangram 解卷积 -> obsm["tangram_ct_pred"]（各类型比例）
+#   单细胞平台  -> SingleR 分类   -> obs["singler_best"]（单一标签）
+#
+# Requires extras:  pip install 'stcompass[tangram]'  and/or  'stcompass[singler]'
+annotation:
+  label_key: cell_ontology_class  # cell-type column in the reference .obs / 参考数据的类型列
+
+  # Drop reference labels with fewer cells than this. Singleton labels have no
+  # within-group variance, which makes rank_genes_groups fail outright, and a
+  # cell type represented by one cell cannot support a proportion estimate.
+  # 剔除细胞数过少的参考标签：单细胞标签没有组内方差，会直接导致 rank_genes_groups 失败。
+  min_cells_per_label: 2
+
+  # Top markers per reference label, unioned into the Tangram gene set. Using
+  # every gene both slows the mapping and lets housekeeping genes dominate.
+  # 每个参考标签取前 N 个 marker 合并为 Tangram 基因集；用全部基因既慢又会被管家基因主导。
+  n_marker_genes: 100
+
+  tangram_mode: cells                    # cells | clusters | constrained
+  tangram_epochs: 300
+  tangram_density_prior: rna_count_based # or `uniform` for equal-area spots
+
+  device: auto      # auto | cpu | cuda | cuda:N
+  n_gpus: 1         # samples are assigned to GPUs by a hash of their path, so a
+                    # resumed run sends each sample to the same device as before
+                    # 按路径哈希分配 GPU，续跑时同一样本仍落在同一设备上
+  n_jobs: 1         # workers for this stage; overrides the global n_jobs
+  singler_threads: 4
+
+  # Sample-sheet column names. Defaults match the sheet used by the original
+  # scripts. / 样本表列名，默认与原始脚本使用的表一致。
+  species_column: OrganismSimple
+  tissue_column: Tissue
+  sample_column: SampleName
+  platform_column: Biotech
+  category_column: Biotech Categories
+  category_filter: Spatial Transcriptomics  # keep only rows matching this / 仅保留匹配行
+
+  # Restrict the run to these species; empty means all. This replaces the two
+  # near-identical human/mouse scripts the pipeline started as.
+  # 限定物种，留空表示全部。这一项取代了原先几乎重复的 human/mouse 两个脚本。
+  species: []
+  # species:
+  #   - Homo sapiens
+  #   - Mus musculus
+
+# ---------------------------------------------------------------------------
+# stcompass programs — NMF gene programs / NMF 基因程序
+# ---------------------------------------------------------------------------
+# MiniBatchNMF runs over row blocks read from a backed .h5ad, which is what lets
+# million-barcode samples factorise without densifying the matrix.
+# 通过 backed 模式按行块读取并增量拟合，因此百万级样本也无需将矩阵稠密化。
+programs:
+  n_components: 10       # number of programs (K) / 程序数
+  max_hvg: null          # restrict to this many high-variance genes; null = all non-empty
+  batch_size: 4096       # rows per partial_fit call
+  epochs: 2              # passes over the matrix; one pass leaves factors under-fitted
+                         # 遍历轮数；只跑一轮会欠拟合
+  row_chunk: 5000        # rows per block read from disk
+  use_counts_layer: true # prefer layers['counts'] so NMF sees raw counts even
+                         # after X has been log-normalised by the qc stage
+                         # 优先使用 layers['counts']，使 NMF 读到的是原始计数
+  random_state: 0
+  save_float32: true     # halves file size at irrelevant precision cost
+  init: nndsvda          # sparse-friendly SVD-based initialisation
+  max_no_improvement: 20
+  large_sample_warning: 1000000
+
+# ---------------------------------------------------------------------------
+# stcompass plot — figures / 出图
+# ---------------------------------------------------------------------------
+plot:
+  format: pdf
+  dpi: 300
+  figsize: [8.0, 8.0]
+
+  # Cell types drawn per spot in a scatter-pie. Showing every type turns each pie
+  # into a ring of slivers; the top few carry the signal.
+  # 每个 spot 只画前 N 个类型：全画会变成一圈碎片，前几个才承载信号。
+  top_n_types: 3
+
+  proportions_key: tangram_ct_pred  # obsm key written by Tangram
+  label_key: singler_best           # obs column written by SingleR
+  spatial_key: spatial              # obsm key holding coordinates
+
+  # Pie radius in data units. null derives it from nearest-neighbour spacing, so
+  # the same setting works for 55 µm Visium spots and 2 µm Visium HD bins.
+  # 留空则由最近邻间距推算，因此 55 µm 的 Visium 与 2 µm 的 HD bin 都无需改配置。
+  radius: null
+
+  invert_y: false   # flip the y-axis for image-style coordinates / 图像坐标系需翻转 y 轴
+
+  # Above this many spots, fall back to a plain scatter: rendering hundreds of
+  # thousands of wedges exhausts memory and is illegible anyway.
+  # 超过该数量则退化为普通散点图：渲染几十万个扇形既耗尽内存又无法辨识。
+  max_pies: 20000
+
+  # Watch mode renders files as an annotation job produces them.
+  # 监视模式：注释任务一边产出，出图一边跟进。
+  watch: false
+  poll_seconds: 5.0       # polling runs even with watchdog installed, because
+                          # inotify does not fire for writes on NFS mounts
+                          # 即使安装了 watchdog 也会轮询：NFS 上的写入不触发 inotify
+  stability_checks: 3     # equal-size observations before a new file is read
+  stability_interval: 2.0 # seconds between those observations
