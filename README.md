@@ -21,13 +21,13 @@ be interrupted and resumed without bookkeeping.
 STCompass 把一整棵 `.h5ad` 样本目录送过五个阶段。每个阶段都是一个子命令，会把输入目录结构
 镜像到输出根目录，并自动跳过已产出的样本 —— 因此处理数千样本的任务可以中断后继续，无需额外记账。
 
-| Stage / 阶段 | Command | Reads | Writes | Replaces |
+| Stage / 阶段 | Command | Reads | Writes |
 |---|---|---|---|---|
-| Quality control / 质控 | `stcompass qc` | `paths.raw` | `paths.qc` | `QC_ALL0917.py` |
-| Clustering / 聚类 | `stcompass cluster` | `paths.qc` | `paths.clustered` | `run_louvain.py` |
-| Annotation / 注释 | `stcompass annotate` | `paths.raw` + reference | `paths.annotated` | `cell_annotation_*.py` |
-| Gene programs / 基因程序 | `stcompass programs` | `paths.qc` | `paths.programs` | `spatialVEG_0923.py` |
-| Figures / 出图 | `stcompass plot` | `paths.annotated` | `paths.figures` | `celltype_image1015.py` |
+| Quality control / 质控 | `stcompass qc` | `paths.raw` | `paths.qc` |
+| Clustering / 聚类 | `stcompass cluster` | `paths.qc` | `paths.clustered` |
+| Annotation / 注释 | `stcompass annotate` | `paths.raw` + reference | `paths.annotated` |
+| Gene programs / 基因程序 | `stcompass programs` | `paths.qc` | `paths.programs` |
+| Figures / 出图 | `stcompass plot` | `paths.annotated` | `paths.figures` |
 
 ---
 
